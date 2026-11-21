@@ -1,0 +1,3 @@
+mysql-connector-python>=8.0
+winrt-Windows.Devices.Geolocation>=3.0
+tkintermapview>=1.29
