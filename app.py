@@ -1174,6 +1174,7 @@ class ServiceFinderApp(tk.Tk):
         detail.pack(fill="x", pady=(8, 6))
         status = ttk.Combobox(frame, values=("pending", "accepted", "declined", "completed", "cancelled"), state="readonly", width=15)
         status.set("pending")
+        ttk.Label(frame, text="Request status:").pack(side="left", padx=(0, 6))
         status.pack(side="left")
         descriptions = {}
 
@@ -1224,14 +1225,21 @@ class ServiceFinderApp(tk.Tk):
             if not selected:
                 messagebox.showinfo("Select a request", "Choose a request first.", parent=window)
                 return
+            request_id = selected[0]
+            new_status = status.get()
+            new_reply = admin_reply.get("1.0", "end").strip()
             try:
                 with connect() as db:
                     cursor = db.cursor()
-                    cursor.execute("UPDATE service_requests SET status = %s, admin_response = %s WHERE id = %s", (status.get(), admin_reply.get("1.0", "end").strip(), int(selected[0])))
+                    cursor.execute("UPDATE service_requests SET status = %s, admin_response = %s WHERE id = %s", (new_status, new_reply, int(request_id)))
                     db.commit()
                     cursor.close()
-                refresh()
+                values = list(tree.item(request_id, "values"))
+                values[5] = new_status
+                tree.item(request_id, values=values)
+                descriptions[request_id]["admin_response"] = new_reply
                 self.refresh_stats()
+                messagebox.showinfo("Request updated", f"The request status is now {new_status.title()}. The customer can see it by checking their tracking code again.", parent=window)
             except Exception as error:
                 messagebox.showerror("Could not update request", str(error), parent=window)
 
@@ -1346,7 +1354,7 @@ class ServiceFinderApp(tk.Tk):
         RoundButton(actions, "Delete selected request", delete_request).pack(side="left")
         RoundButton(actions, "Message provider on WhatsApp", message_provider).pack(side="right", padx=(6, 0))
         RoundButton(actions, "Save and message customer on WhatsApp", message_customer).pack(side="right", padx=(6, 0))
-        RoundButton(actions, "Save status", save_status, primary=True).pack(side="right")
+        RoundButton(actions, "Save status and reply", save_status, primary=True).pack(side="right")
         refresh()
 
     def backup_restore_menu(self):
