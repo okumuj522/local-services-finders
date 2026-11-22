@@ -80,6 +80,7 @@ def connect():
     cursor.execute(
         """CREATE TABLE IF NOT EXISTS service_requests (
                id INT AUTO_INCREMENT PRIMARY KEY,
+               tracking_code VARCHAR(32) NULL UNIQUE,
                provider_id INT NOT NULL,
                requester_name VARCHAR(255) NOT NULL,
                phone VARCHAR(50) NOT NULL,
@@ -91,6 +92,11 @@ def connect():
                    REFERENCES providers(id) ON DELETE CASCADE
            )"""
     )
+    cursor.execute("SHOW COLUMNS FROM service_requests")
+    request_columns = {column[0] for column in cursor.fetchall()}
+    if "tracking_code" not in request_columns:
+        cursor.execute("ALTER TABLE service_requests ADD COLUMN tracking_code VARCHAR(32) NULL UNIQUE")
+    cursor.execute("UPDATE service_requests SET tracking_code = CONCAT('LSF-', LPAD(id, 8, '0')) WHERE tracking_code IS NULL")
     cursor.close()
     return db
 

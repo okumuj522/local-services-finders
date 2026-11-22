@@ -283,6 +283,7 @@ class ServiceFinderApp(tk.Tk):
         RoundButton(public_actions, "Directions", self.open_directions).pack(side="left")
         RoundButton(public_actions, "Open website", self.open_provider_website).pack(side="left", padx=6)
         RoundButton(public_actions, "Request service", self.request_service, primary=True).pack(side="left")
+        RoundButton(public_actions, "Track request", self.track_request).pack(side="left", padx=6)
         RoundButton(public_actions, "Write review", self.review_dialog).pack(side="left")
         RoundButton(public_actions, "Report listing", self.report_provider).pack(side="left", padx=6)
         RoundButton(public_actions, "Save favorite", self.toggle_favorite).pack(side="left")
@@ -731,21 +732,60 @@ class ServiceFinderApp(tk.Tk):
                 messagebox.showwarning("Check phone number", "Enter a phone number with 7 to 15 digits.", parent=window)
                 return
             try:
+                tracking_code = f"LSF-{secrets.token_hex(4).upper()}"
                 with connect() as db:
                     cursor = db.cursor()
                     cursor.execute(
-                        "INSERT INTO service_requests (provider_id, requester_name, phone, preferred_time, description) VALUES (%s, %s, %s, %s, %s)",
-                        (provider_id, requester_name, requester_phone, when, details),
+                        "INSERT INTO service_requests (tracking_code, provider_id, requester_name, phone, preferred_time, description) VALUES (%s, %s, %s, %s, %s, %s)",
+                        (tracking_code, provider_id, requester_name, requester_phone, when, details),
                     )
                     db.commit()
                     cursor.close()
                 window.destroy()
                 self.refresh_stats()
-                messagebox.showinfo("Request sent", f"Your request to {provider_name} has been saved for the directory admin to review.", parent=self)
+                messagebox.showinfo("Request sent", f"Your request to {provider_name} has been saved. Keep this tracking code to check its status later:\n\n{tracking_code}", parent=self)
             except Exception as error:
                 messagebox.showerror("Could not send request", str(error), parent=window)
 
         RoundButton(frame, "Send request", submit, primary=True).grid(row=5, column=1, sticky="e", pady=(8, 0))
+
+    def track_request(self):
+        window = tk.Toplevel(self)
+        window.title("Track service request")
+        window.transient(self)
+        window.grab_set()
+        frame = ttk.Frame(window, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Enter your tracking code and phone number.").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Label(frame, text="Tracking code").grid(row=1, column=0, sticky="w", pady=3)
+        code = ttk.Entry(frame, width=36)
+        code.grid(row=1, column=1, pady=3)
+        ttk.Label(frame, text="Phone number").grid(row=2, column=0, sticky="w", pady=3)
+        phone = ttk.Entry(frame, width=36)
+        phone.grid(row=2, column=1, pady=3)
+        result = ttk.Label(frame, text="", wraplength=380, justify="left")
+        result.grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+        def lookup():
+            try:
+                with connect() as db:
+                    cursor = db.cursor(dictionary=True)
+                    cursor.execute(
+                        """SELECT p.name AS provider, r.preferred_time, r.status
+                           FROM service_requests r JOIN providers p ON p.id = r.provider_id
+                           WHERE r.tracking_code = %s AND r.phone = %s""",
+                        (code.get().strip().upper(), phone.get().strip()),
+                    )
+                    request = cursor.fetchone()
+                    cursor.close()
+                if request:
+                    result.config(text=f"Provider: {request['provider']}\nPreferred time: {request['preferred_time']}\nStatus: {request['status'].title()}")
+                else:
+                    result.config(text="No request matched that code and phone number.")
+            except Exception as error:
+                messagebox.showerror("Could not check request", str(error), parent=window)
+
+        RoundButton(frame, "Check status", lookup, primary=True).grid(row=3, column=1, sticky="e", pady=(6, 0))
 
     def open_directions(self):
         selected = self.results.selection()
@@ -969,9 +1009,9 @@ class ServiceFinderApp(tk.Tk):
         window.transient(self)
         frame = ttk.Frame(window, padding=12)
         frame.pack(fill="both", expand=True)
-        columns = ("id", "provider", "requester", "phone", "preferred", "status")
+        columns = ("code", "provider", "requester", "phone", "preferred", "status")
         tree = ttk.Treeview(frame, columns=columns, show="headings", height=12)
-        for col, title, width in (("id", "ID", 45), ("provider", "Provider", 150), ("requester", "Customer", 130), ("phone", "Phone", 110), ("preferred", "Preferred time", 160), ("status", "Status", 90)):
+        for col, title, width in (("code", "Tracking code", 120), ("provider", "Provider", 150), ("requester", "Customer", 130), ("phone", "Phone", 110), ("preferred", "Preferred time", 160), ("status", "Status", 90)):
             tree.heading(col, text=title)
             tree.column(col, width=width, anchor="w")
         tree.pack(fill="both", expand=True)
@@ -989,7 +1029,7 @@ class ServiceFinderApp(tk.Tk):
                 with connect() as db:
                     cursor = db.cursor(dictionary=True)
                     cursor.execute(
-                        """SELECT r.id, p.name AS provider, r.requester_name, r.phone, r.preferred_time, r.status, r.description
+                        """SELECT r.id, r.tracking_code, p.name AS provider, r.requester_name, r.phone, r.preferred_time, r.status, r.description
                            FROM service_requests r JOIN providers p ON p.id = r.provider_id
                            ORDER BY (r.status = 'pending') DESC, r.created_at DESC"""
                     )
@@ -997,7 +1037,7 @@ class ServiceFinderApp(tk.Tk):
                     cursor.close()
                 for row in rows:
                     key = str(row["id"])
-                    tree.insert("", "end", iid=key, values=(row["id"], row["provider"], row["requester_name"], row["phone"], row["preferred_time"], row["status"]))
+                    tree.insert("", "end", iid=key, values=(row["tracking_code"], row["provider"], row["requester_name"], row["phone"], row["preferred_time"], row["status"]))
                     descriptions[key] = row["description"]
             except Exception as error:
                 messagebox.showerror("Could not load requests", str(error), parent=window)
@@ -1020,7 +1060,7 @@ class ServiceFinderApp(tk.Tk):
             try:
                 with connect() as db:
                     cursor = db.cursor()
-                    cursor.execute("UPDATE service_requests SET status = %s WHERE id = %s", (status.get(), int(selected[0])))
+                cursor.execute("UPDATE service_requests SET status = %s WHERE id = %s", (status.get(), int(selected[0])))
                     db.commit()
                     cursor.close()
                 refresh()
@@ -1060,7 +1100,7 @@ class ServiceFinderApp(tk.Tk):
                 reviews = cursor.fetchall()
                 cursor.execute("SELECT id, provider_id, reporter, issue, details, status, created_at FROM provider_reports ORDER BY id")
                 reports = cursor.fetchall()
-                cursor.execute("SELECT id, provider_id, requester_name, phone, preferred_time, description, status, created_at FROM service_requests ORDER BY id")
+                cursor.execute("SELECT id, tracking_code, provider_id, requester_name, phone, preferred_time, description, status, created_at FROM service_requests ORDER BY id")
                 requests = cursor.fetchall()
                 cursor.close()
             payload = {
@@ -1080,7 +1120,7 @@ class ServiceFinderApp(tk.Tk):
                 "providers": ["id", "name", "service", "location", "phone", "price", "notes", "latitude", "longitude", "opening_hours", "verified", "website"],
                 "reviews": ["id", "provider_id", "reviewer", "rating", "comment", "created_at"],
                 "reports": ["id", "provider_id", "reporter", "issue", "details", "status", "created_at"],
-                "requests": ["id", "provider_id", "requester_name", "phone", "preferred_time", "description", "status", "created_at"],
+                "requests": ["id", "tracking_code", "provider_id", "requester_name", "phone", "preferred_time", "description", "status", "created_at"],
             }
             for name, rows in (("providers", providers), ("reviews", reviews), ("reports", reports), ("requests", requests)):
                 path = output_dir / f"local_services_{name}_{timestamp}.csv"
@@ -1148,8 +1188,8 @@ class ServiceFinderApp(tk.Tk):
                     [(r["id"], r["provider_id"], r["reporter"], r["issue"], r["details"], r["status"], r["created_at"]) for r in reports],
                 )
                 cursor.executemany(
-                    "INSERT INTO service_requests (id, provider_id, requester_name, phone, preferred_time, description, status, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                    [(r["id"], r["provider_id"], r["requester_name"], r["phone"], r["preferred_time"], r["description"], r["status"], r["created_at"]) for r in requests],
+                    "INSERT INTO service_requests (id, tracking_code, provider_id, requester_name, phone, preferred_time, description, status, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    [(r["id"], r.get("tracking_code"), r["provider_id"], r["requester_name"], r["phone"], r["preferred_time"], r["description"], r["status"], r["created_at"]) for r in requests],
                 )
                 db.commit()
                 cursor.close()
