@@ -208,6 +208,7 @@ class ServiceFinderApp(tk.Tk):
         self.page_canvas.bind("<Configure>", lambda event: self.page_canvas.itemconfigure(self.page_window, width=event.width))
         self.bind_all("<MouseWheel>", self._route_mousewheel)
         self.is_admin = False
+        self.admin_username = None
         self.current_coordinates = None
         self.favorites_only = False
         self.verified_only = False
@@ -228,6 +229,7 @@ class ServiceFinderApp(tk.Tk):
         ttk.Label(heading, text="Find trusted help in your area", foreground="#607080").pack(anchor="w", pady=(2, 0))
         self.admin_button = RoundButton(header, "Admin login", self.admin_login_or_logout)
         self.admin_button.pack(side="right", anchor="n")
+        self.change_password_button = RoundButton(header, "Change password", self.change_admin_password)
 
         stats = ttk.Frame(self.page)
         stats.pack(fill="x", pady=(0, 12))
@@ -333,6 +335,8 @@ class ServiceFinderApp(tk.Tk):
     def admin_login_or_logout(self):
         if self.is_admin:
             self.is_admin = False
+            self.admin_username = None
+            self.change_password_button.pack_forget()
             self.admin_button.set_text("Admin login")
             self.status.config(text="Logged out")
             return
@@ -404,7 +408,9 @@ class ServiceFinderApp(tk.Tk):
                     messagebox.showerror("Login failed", "The username or password is incorrect.", parent=window)
                     return
                 self.is_admin = True
+                self.admin_username = user
                 self.admin_button.set_text("Log out admin")
+                self.change_password_button.pack(side="right", anchor="n", padx=(0, 8))
                 self.status.config(text=f"Admin: {user}")
                 window.destroy()
             except Exception as error:
@@ -421,6 +427,69 @@ class ServiceFinderApp(tk.Tk):
         messagebox.showinfo("Admin login required", "Log in as an admin to manage provider listings and reports.", parent=self)
         self.show_admin_auth()
         return self.is_admin
+
+    def change_admin_password(self):
+        if not self.require_admin():
+            return
+        window = tk.Toplevel(self)
+        window.title("Change admin password")
+        window.transient(self)
+        window.grab_set()
+        frame = ttk.Frame(window, padding=16)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Change admin password", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Label(frame, text="Current password").grid(row=1, column=0, sticky="w", pady=4)
+        current_password = ttk.Entry(frame, width=34, show="*")
+        current_password.grid(row=1, column=1, pady=4)
+        ttk.Label(frame, text="New password").grid(row=2, column=0, sticky="w", pady=4)
+        new_password = ttk.Entry(frame, width=34, show="*")
+        new_password.grid(row=2, column=1, pady=4)
+        ttk.Label(frame, text="Confirm new password").grid(row=3, column=0, sticky="w", pady=4)
+        confirm_password = ttk.Entry(frame, width=34, show="*")
+        confirm_password.grid(row=3, column=1, pady=4)
+
+        def save_password():
+            current_secret = current_password.get()
+            new_secret = new_password.get()
+            if len(new_secret) < 10:
+                messagebox.showwarning("Password too short", "Use a password with at least 10 characters.", parent=window)
+                return
+            if new_secret != confirm_password.get():
+                messagebox.showwarning("Passwords do not match", "Enter the same new password in both fields.", parent=window)
+                return
+            if new_secret == current_secret:
+                messagebox.showwarning("Choose a different password", "Your new password must be different from the current one.", parent=window)
+                return
+            try:
+                with connect() as db:
+                    cursor = db.cursor()
+                    cursor.execute("SELECT password_salt, password_hash FROM admins WHERE username = %s", (self.admin_username,))
+                    record = cursor.fetchone()
+                    if not record:
+                        messagebox.showerror("Admin account unavailable", "Log out and sign in again before changing the password.", parent=window)
+                        cursor.close()
+                        return
+                    salt = bytes.fromhex(record[0])
+                    current_hash = hashlib.pbkdf2_hmac("sha256", current_secret.encode("utf-8"), salt, 600_000).hex()
+                    if not hmac.compare_digest(current_hash, record[1]):
+                        messagebox.showerror("Current password incorrect", "Enter your current admin password and try again.", parent=window)
+                        cursor.close()
+                        return
+                    new_salt = secrets.token_bytes(16)
+                    new_hash = hashlib.pbkdf2_hmac("sha256", new_secret.encode("utf-8"), new_salt, 600_000).hex()
+                    cursor.execute(
+                        "UPDATE admins SET password_salt = %s, password_hash = %s WHERE username = %s",
+                        (new_salt.hex(), new_hash, self.admin_username),
+                    )
+                    db.commit()
+                    cursor.close()
+                messagebox.showinfo("Password changed", "Your admin password has been changed.", parent=window)
+                window.destroy()
+            except Exception as error:
+                messagebox.showerror("Could not change password", str(error), parent=window)
+
+        RoundButton(frame, "Save new password", save_password, primary=True).grid(row=4, column=1, sticky="e", pady=(8, 0))
+        current_password.focus_set()
 
     def search(self):
         nearest = self.sort_mode.get() == "Nearest" and self.current_coordinates is not None
