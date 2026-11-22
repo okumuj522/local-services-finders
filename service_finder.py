@@ -77,6 +77,20 @@ def connect():
                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
            )"""
     )
+    cursor.execute(
+        """CREATE TABLE IF NOT EXISTS service_requests (
+               id INT AUTO_INCREMENT PRIMARY KEY,
+               provider_id INT NOT NULL,
+               requester_name VARCHAR(255) NOT NULL,
+               phone VARCHAR(50) NOT NULL,
+               preferred_time VARCHAR(100) NOT NULL,
+               description TEXT NOT NULL,
+               status VARCHAR(20) NOT NULL DEFAULT 'pending',
+               created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+               CONSTRAINT fk_requests_provider FOREIGN KEY (provider_id)
+                   REFERENCES providers(id) ON DELETE CASCADE
+           )"""
+    )
     cursor.close()
     return db
 

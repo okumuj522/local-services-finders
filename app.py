@@ -220,7 +220,7 @@ class ServiceFinderApp(tk.Tk):
         stats = ttk.Frame(self.page)
         stats.pack(fill="x", pady=(0, 12))
         self.stat_values = {}
-        for key, title in (("providers", "Providers"), ("verified", "Verified"), ("reviews", "Reviews"), ("reports", "Open reports")):
+        for key, title in (("providers", "Providers"), ("verified", "Verified"), ("reviews", "Reviews"), ("reports", "Open reports"), ("requests", "Pending requests")):
             card = tk.Frame(stats, background="white", highlightthickness=1, highlightbackground="#dce4ee", padx=13, pady=8)
             card.pack(side="left", fill="x", expand=True, padx=(0, 8))
             tk.Label(card, text=title, background="white", foreground="#607080", font=("Segoe UI", 9)).pack(anchor="w")
@@ -274,6 +274,7 @@ class ServiceFinderApp(tk.Tk):
         RoundButton(admin_actions, "Remove selected", self.remove_provider).pack(side="left")
         RoundButton(admin_actions, "Review reports", self.manage_reports).pack(side="left", padx=6)
         RoundButton(admin_actions, "Manage reviews", self.manage_reviews).pack(side="left")
+        RoundButton(admin_actions, "Manage requests", self.manage_requests).pack(side="left", padx=6)
         RoundButton(admin_actions, "Backup / restore", self.backup_restore_menu).pack(side="left")
         public_actions = ttk.Frame(actions)
         public_actions.pack(fill="x")
@@ -281,6 +282,7 @@ class ServiceFinderApp(tk.Tk):
         RoundButton(public_actions, "Contact provider", self.contact_provider, primary=True).pack(side="left", padx=6)
         RoundButton(public_actions, "Directions", self.open_directions).pack(side="left")
         RoundButton(public_actions, "Open website", self.open_provider_website).pack(side="left", padx=6)
+        RoundButton(public_actions, "Request service", self.request_service, primary=True).pack(side="left")
         RoundButton(public_actions, "Write review", self.review_dialog).pack(side="left")
         RoundButton(public_actions, "Report listing", self.report_provider).pack(side="left", padx=6)
         RoundButton(public_actions, "Save favorite", self.toggle_favorite).pack(side="left")
@@ -469,11 +471,12 @@ class ServiceFinderApp(tk.Tk):
                     """SELECT (SELECT COUNT(*) FROM providers),
                               (SELECT COUNT(*) FROM providers WHERE verified = 1),
                               (SELECT COUNT(*) FROM reviews),
-                              (SELECT COUNT(*) FROM provider_reports WHERE status = 'open')"""
+                              (SELECT COUNT(*) FROM provider_reports WHERE status = 'open'),
+                              (SELECT COUNT(*) FROM service_requests WHERE status = 'pending')"""
                 )
                 counts = cursor.fetchone()
                 cursor.close()
-            for key, value in zip(("providers", "verified", "reviews", "reports"), counts):
+            for key, value in zip(("providers", "verified", "reviews", "reports", "requests"), counts):
                 self.stat_values[key].config(text=str(value))
         except Exception:
             pass
@@ -691,6 +694,59 @@ class ServiceFinderApp(tk.Tk):
         RoundButton(buttons, "Copy number", copy_number).pack(side="left", padx=(0, 8))
         RoundButton(buttons, "Open phone app", open_phone, primary=True).pack(side="left")
 
+    def request_service(self):
+        selected = self.results.selection()
+        if not selected:
+            messagebox.showinfo("Select a provider", "Choose a provider card first.")
+            return
+        provider_values = self.results.item(selected[0], "values")
+        provider_id, provider_name = int(provider_values[0]), provider_values[1]
+        window = tk.Toplevel(self)
+        window.title(f"Request service from {provider_name}")
+        window.transient(self)
+        window.grab_set()
+        frame = ttk.Frame(window, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=f"Request service from {provider_name}", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Label(frame, text="Your name").grid(row=1, column=0, sticky="w", pady=3)
+        name = ttk.Entry(frame, width=38)
+        name.grid(row=1, column=1, pady=3)
+        ttk.Label(frame, text="Phone number").grid(row=2, column=0, sticky="w", pady=3)
+        phone = ttk.Entry(frame, width=38)
+        phone.grid(row=2, column=1, pady=3)
+        ttk.Label(frame, text="Preferred date/time").grid(row=3, column=0, sticky="w", pady=3)
+        preferred = ttk.Entry(frame, width=38)
+        preferred.grid(row=3, column=1, pady=3)
+        ttk.Label(frame, text="What do you need?").grid(row=4, column=0, sticky="nw", pady=3)
+        description = tk.Text(frame, width=38, height=5, wrap="word")
+        description.grid(row=4, column=1, pady=3)
+
+        def submit():
+            requester_name, requester_phone = name.get().strip(), phone.get().strip()
+            when, details = preferred.get().strip(), description.get("1.0", "end").strip()
+            if not all((requester_name, requester_phone, when, details)):
+                messagebox.showwarning("Missing information", "Complete all fields before sending the request.", parent=window)
+                return
+            if not 7 <= sum(char.isdigit() for char in requester_phone) <= 15:
+                messagebox.showwarning("Check phone number", "Enter a phone number with 7 to 15 digits.", parent=window)
+                return
+            try:
+                with connect() as db:
+                    cursor = db.cursor()
+                    cursor.execute(
+                        "INSERT INTO service_requests (provider_id, requester_name, phone, preferred_time, description) VALUES (%s, %s, %s, %s, %s)",
+                        (provider_id, requester_name, requester_phone, when, details),
+                    )
+                    db.commit()
+                    cursor.close()
+                window.destroy()
+                self.refresh_stats()
+                messagebox.showinfo("Request sent", f"Your request to {provider_name} has been saved for the directory admin to review.", parent=self)
+            except Exception as error:
+                messagebox.showerror("Could not send request", str(error), parent=window)
+
+        RoundButton(frame, "Send request", submit, primary=True).grid(row=5, column=1, sticky="e", pady=(8, 0))
+
     def open_directions(self):
         selected = self.results.selection()
         if not selected:
@@ -904,6 +960,78 @@ class ServiceFinderApp(tk.Tk):
         RoundButton(frame, "Remove selected review", delete_review, primary=True).pack(anchor="e")
         refresh()
 
+    def manage_requests(self):
+        if not self.require_admin():
+            return
+        window = tk.Toplevel(self)
+        window.title("Service requests")
+        window.geometry("860x500")
+        window.transient(self)
+        frame = ttk.Frame(window, padding=12)
+        frame.pack(fill="both", expand=True)
+        columns = ("id", "provider", "requester", "phone", "preferred", "status")
+        tree = ttk.Treeview(frame, columns=columns, show="headings", height=12)
+        for col, title, width in (("id", "ID", 45), ("provider", "Provider", 150), ("requester", "Customer", 130), ("phone", "Phone", 110), ("preferred", "Preferred time", 160), ("status", "Status", 90)):
+            tree.heading(col, text=title)
+            tree.column(col, width=width, anchor="w")
+        tree.pack(fill="both", expand=True)
+        detail = tk.Text(frame, height=4, wrap="word", state="disabled")
+        detail.pack(fill="x", pady=(8, 6))
+        status = ttk.Combobox(frame, values=("pending", "accepted", "declined", "completed"), state="readonly", width=15)
+        status.set("pending")
+        status.pack(side="left")
+        descriptions = {}
+
+        def refresh():
+            tree.delete(*tree.get_children())
+            descriptions.clear()
+            try:
+                with connect() as db:
+                    cursor = db.cursor(dictionary=True)
+                    cursor.execute(
+                        """SELECT r.id, p.name AS provider, r.requester_name, r.phone, r.preferred_time, r.status, r.description
+                           FROM service_requests r JOIN providers p ON p.id = r.provider_id
+                           ORDER BY (r.status = 'pending') DESC, r.created_at DESC"""
+                    )
+                    rows = cursor.fetchall()
+                    cursor.close()
+                for row in rows:
+                    key = str(row["id"])
+                    tree.insert("", "end", iid=key, values=(row["id"], row["provider"], row["requester_name"], row["phone"], row["preferred_time"], row["status"]))
+                    descriptions[key] = row["description"]
+            except Exception as error:
+                messagebox.showerror("Could not load requests", str(error), parent=window)
+
+        def select_request(_event=None):
+            selected = tree.selection()
+            if not selected:
+                return
+            detail.configure(state="normal")
+            detail.delete("1.0", "end")
+            detail.insert("1.0", descriptions.get(selected[0], ""))
+            detail.configure(state="disabled")
+            status.set(tree.item(selected[0], "values")[5])
+
+        def save_status():
+            selected = tree.selection()
+            if not selected:
+                messagebox.showinfo("Select a request", "Choose a request first.", parent=window)
+                return
+            try:
+                with connect() as db:
+                    cursor = db.cursor()
+                    cursor.execute("UPDATE service_requests SET status = %s WHERE id = %s", (status.get(), int(selected[0])))
+                    db.commit()
+                    cursor.close()
+                refresh()
+                self.refresh_stats()
+            except Exception as error:
+                messagebox.showerror("Could not update request", str(error), parent=window)
+
+        tree.bind("<<TreeviewSelect>>", select_request)
+        RoundButton(frame, "Save status", save_status, primary=True).pack(anchor="e")
+        refresh()
+
     def backup_restore_menu(self):
         if not self.require_admin():
             return
@@ -932,6 +1060,8 @@ class ServiceFinderApp(tk.Tk):
                 reviews = cursor.fetchall()
                 cursor.execute("SELECT id, provider_id, reporter, issue, details, status, created_at FROM provider_reports ORDER BY id")
                 reports = cursor.fetchall()
+                cursor.execute("SELECT id, provider_id, requester_name, phone, preferred_time, description, status, created_at FROM service_requests ORDER BY id")
+                requests = cursor.fetchall()
                 cursor.close()
             payload = {
                 "format": "local-services-finder-backup",
@@ -940,6 +1070,7 @@ class ServiceFinderApp(tk.Tk):
                 "providers": providers,
                 "reviews": reviews,
                 "provider_reports": reports,
+                "service_requests": requests,
             }
             output_dir = Path(folder)
             (output_dir / f"local_services_backup_{timestamp}.json").write_text(
@@ -949,8 +1080,9 @@ class ServiceFinderApp(tk.Tk):
                 "providers": ["id", "name", "service", "location", "phone", "price", "notes", "latitude", "longitude", "opening_hours", "verified", "website"],
                 "reviews": ["id", "provider_id", "reviewer", "rating", "comment", "created_at"],
                 "reports": ["id", "provider_id", "reporter", "issue", "details", "status", "created_at"],
+                "requests": ["id", "provider_id", "requester_name", "phone", "preferred_time", "description", "status", "created_at"],
             }
-            for name, rows in (("providers", providers), ("reviews", reviews), ("reports", reports)):
+            for name, rows in (("providers", providers), ("reviews", reviews), ("reports", reports), ("requests", requests)):
                 path = output_dir / f"local_services_{name}_{timestamp}.csv"
                 fields = list(rows[0].keys()) if rows else empty_headers[name]
                 with path.open("w", newline="", encoding="utf-8-sig") as output:
@@ -974,12 +1106,14 @@ class ServiceFinderApp(tk.Tk):
             if payload.get("format") != "local-services-finder-backup" or payload.get("version") != 1:
                 raise ValueError("This file is not a supported Local Services Finder backup.")
             providers, reviews, reports = payload["providers"], payload["reviews"], payload["provider_reports"]
-            if not all(isinstance(rows, list) for rows in (providers, reviews, reports)):
+            requests = payload.get("service_requests", [])
+            if not all(isinstance(rows, list) for rows in (providers, reviews, reports, requests)):
                 raise ValueError("The backup data is incomplete.")
             needed = (
                 ({"id", "name", "service", "location", "phone", "price", "notes", "latitude", "longitude"}, providers),
                 ({"id", "provider_id", "reviewer", "rating", "comment", "created_at"}, reviews),
                 ({"id", "provider_id", "reporter", "issue", "details", "status", "created_at"}, reports),
+                ({"id", "provider_id", "requester_name", "phone", "preferred_time", "description", "status", "created_at"}, requests),
             )
             if any(any(not required.issubset(row) for row in rows) for required, rows in needed):
                 raise ValueError("The backup contains an incomplete record.")
@@ -996,7 +1130,7 @@ class ServiceFinderApp(tk.Tk):
         try:
             with connect() as db:
                 cursor = db.cursor()
-                cursor.execute("SELECT (SELECT COUNT(*) FROM providers) + (SELECT COUNT(*) FROM reviews) + (SELECT COUNT(*) FROM provider_reports)")
+                cursor.execute("SELECT (SELECT COUNT(*) FROM providers) + (SELECT COUNT(*) FROM reviews) + (SELECT COUNT(*) FROM provider_reports) + (SELECT COUNT(*) FROM service_requests)")
                 if cursor.fetchone()[0]:
                     cursor.close()
                     messagebox.showerror("Database is not empty", "Restore stopped to protect existing records. Choose an empty database.", parent=parent)
@@ -1013,11 +1147,15 @@ class ServiceFinderApp(tk.Tk):
                     "INSERT INTO provider_reports (id, provider_id, reporter, issue, details, status, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                     [(r["id"], r["provider_id"], r["reporter"], r["issue"], r["details"], r["status"], r["created_at"]) for r in reports],
                 )
+                cursor.executemany(
+                    "INSERT INTO service_requests (id, provider_id, requester_name, phone, preferred_time, description, status, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    [(r["id"], r["provider_id"], r["requester_name"], r["phone"], r["preferred_time"], r["description"], r["status"], r["created_at"]) for r in requests],
+                )
                 db.commit()
                 cursor.close()
             parent.destroy()
             self.show_all()
-            messagebox.showinfo("Restore complete", f"Restored {len(providers)} providers, {len(reviews)} reviews, and {len(reports)} reports.", parent=self)
+            messagebox.showinfo("Restore complete", f"Restored {len(providers)} providers, {len(reviews)} reviews, {len(reports)} reports, and {len(requests)} service requests.", parent=self)
         except Exception as error:
             messagebox.showerror("Restore failed", f"The restore could not be completed.\n\n{error}", parent=parent)
 

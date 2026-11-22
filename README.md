@@ -2,6 +2,8 @@
 
 A Python desktop app using Tkinter and MySQL.
 
+Features include provider search, map-selected coordinates and nearby sorting, ratings and reviews, favorites, provider verification, service requests, reports, and database backup/restore.
+
 ## Requirements
 
 - Python 3.10 or newer
