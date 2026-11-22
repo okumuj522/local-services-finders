@@ -1160,7 +1160,8 @@ class ServiceFinderApp(tk.Tk):
             return
         window = tk.Toplevel(self)
         window.title("Service requests")
-        window.geometry("860x500")
+        window.geometry("920x540")
+        window.minsize(860, 500)
         window.transient(self)
         frame = ttk.Frame(window, padding=12)
         frame.pack(fill="both", expand=True)
@@ -1172,9 +1173,11 @@ class ServiceFinderApp(tk.Tk):
         tree.pack(fill="both", expand=True)
         detail = tk.Text(frame, height=4, wrap="word", state="disabled")
         detail.pack(fill="x", pady=(8, 6))
-        status = ttk.Combobox(frame, values=("pending", "accepted", "declined", "completed", "cancelled"), state="readonly", width=15)
+        status_bar = ttk.Frame(frame)
+        status_bar.pack(fill="x", pady=(0, 4))
+        ttk.Label(status_bar, text="Request status:").pack(side="left", padx=(0, 6))
+        status = ttk.Combobox(status_bar, values=("pending", "accepted", "declined", "completed", "cancelled"), state="readonly", width=15)
         status.set("pending")
-        ttk.Label(frame, text="Request status:").pack(side="left", padx=(0, 6))
         status.pack(side="left")
         descriptions = {}
 
@@ -1198,6 +1201,7 @@ class ServiceFinderApp(tk.Tk):
                     descriptions[key] = {
                         "description": row["description"],
                         "admin_response": row["admin_response"] or "",
+                        "status": row["status"],
                         "tracking_code": row["tracking_code"],
                         "provider": row["provider"],
                         "provider_phone": row["provider_phone"],
@@ -1238,6 +1242,7 @@ class ServiceFinderApp(tk.Tk):
                 values[5] = new_status
                 tree.item(request_id, values=values)
                 descriptions[request_id]["admin_response"] = new_reply
+                descriptions[request_id]["status"] = new_status
                 self.refresh_stats()
                 messagebox.showinfo("Request updated", f"The request status is now {new_status.title()}. The customer can see it by checking their tracking code again.", parent=window)
             except Exception as error:
@@ -1295,22 +1300,8 @@ class ServiceFinderApp(tk.Tk):
                 messagebox.showwarning("Check customer phone", "The customer phone number needs a country code.", parent=window)
                 return
             reply = admin_reply.get("1.0", "end").strip()
-            try:
-                with connect() as db:
-                    cursor = db.cursor()
-                    cursor.execute(
-                        "UPDATE service_requests SET status = %s, admin_response = %s WHERE id = %s",
-                        (status.get(), reply, int(selected[0])),
-                    )
-                    db.commit()
-                    cursor.close()
-                request["admin_response"] = reply
-                values = list(tree.item(selected[0], "values"))
-                values[5] = status.get()
-                tree.item(selected[0], values=values)
-                self.refresh_stats()
-            except Exception as error:
-                messagebox.showerror("Could not save request update", str(error), parent=window)
+            if request["status"] != status.get() or request["admin_response"] != reply:
+                messagebox.showinfo("Save first", "Click Save before messaging the customer.", parent=window)
                 return
             message = (
                 f"Hello {request['requester_name']}, here is an update for your request {request['tracking_code']}.\n"
@@ -1322,7 +1313,7 @@ class ServiceFinderApp(tk.Tk):
             except Exception:
                 opened = False
             if not opened:
-                messagebox.showerror("Could not open WhatsApp", "The request update was saved, but WhatsApp could not be opened. Try again from this request.", parent=window)
+                messagebox.showerror("Could not open WhatsApp", "Open WhatsApp or a browser on this computer and try again.", parent=window)
 
         def delete_request():
             selected = tree.selection()
@@ -1349,12 +1340,12 @@ class ServiceFinderApp(tk.Tk):
                 messagebox.showerror("Could not delete request", str(error), parent=window)
 
         tree.bind("<<TreeviewSelect>>", select_request)
+        RoundButton(status_bar, "Save", save_status, primary=True).pack(side="left", padx=(10, 0))
         actions = ttk.Frame(frame)
         actions.pack(fill="x", pady=(8, 0))
-        RoundButton(actions, "Delete selected request", delete_request).pack(side="left")
-        RoundButton(actions, "Message provider on WhatsApp", message_provider).pack(side="right", padx=(6, 0))
-        RoundButton(actions, "Save and message customer on WhatsApp", message_customer).pack(side="right", padx=(6, 0))
-        RoundButton(actions, "Save status and reply", save_status, primary=True).pack(side="right")
+        RoundButton(actions, "Delete request", delete_request).pack(side="left")
+        RoundButton(actions, "WhatsApp provider", message_provider).pack(side="right", padx=(6, 0))
+        RoundButton(actions, "WhatsApp customer", message_customer).pack(side="right", padx=(6, 0))
         refresh()
 
     def backup_restore_menu(self):
