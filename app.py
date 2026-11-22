@@ -127,6 +127,7 @@ class RoundButton(tk.Canvas):
         self.label = text
         self.command = command
         self.primary = primary
+        self.enabled = True
         self.base = "#087e78" if primary else "#e6edf5"
         self.hover = "#066b67" if primary else "#cfe7e5"
         self.foreground = "white" if primary else "#17365a"
@@ -143,14 +144,17 @@ class RoundButton(tk.Canvas):
         self.delete("all")
         width = max(self.winfo_width(), self.button_width)
         height = max(self.winfo_height(), 38)
-        color = self.hover if getattr(self, "hovered", False) else self.base
+        color = "#c8cdd3" if not self.enabled else (self.hover if getattr(self, "hovered", False) else self.base)
         radius = 14
         self.create_arc(1, 1, radius * 2, height - 1, start=90, extent=180, fill=color, outline=color)
         self.create_arc(width - radius * 2 - 1, 1, width - 1, height - 1, start=270, extent=180, fill=color, outline=color)
         self.create_rectangle(radius, 1, width - radius, height - 1, fill=color, outline=color)
-        self.create_text(width / 2, height / 2, text=self.label, fill=self.foreground, font=("Segoe UI", 9, "bold"))
+        foreground = "#737b84" if not self.enabled else self.foreground
+        self.create_text(width / 2, height / 2, text=self.label, fill=foreground, font=("Segoe UI", 9, "bold"))
 
     def _on_enter(self, _event):
+        if not self.enabled:
+            return
         self.hovered = True
         self._draw()
 
@@ -159,7 +163,13 @@ class RoundButton(tk.Canvas):
         self._draw()
 
     def _on_click(self, _event):
-        self.command()
+        if self.enabled:
+            self.command()
+
+    def set_enabled(self, enabled):
+        self.enabled = enabled
+        self.configure(cursor="hand2" if enabled else "arrow")
+        self._draw()
 
     def set_text(self, text):
         self.label = text
@@ -771,7 +781,7 @@ class ServiceFinderApp(tk.Tk):
                 with connect() as db:
                     cursor = db.cursor(dictionary=True)
                     cursor.execute(
-                        """SELECT p.name AS provider, r.preferred_time, r.status
+                        """SELECT r.id, p.name AS provider, r.preferred_time, r.status, r.admin_response
                            FROM service_requests r JOIN providers p ON p.id = r.provider_id
                            WHERE r.tracking_code = %s AND r.phone = %s""",
                         (code.get().strip().upper(), phone.get().strip()),
@@ -779,13 +789,45 @@ class ServiceFinderApp(tk.Tk):
                     request = cursor.fetchone()
                     cursor.close()
                 if request:
-                    result.config(text=f"Provider: {request['provider']}\nPreferred time: {request['preferred_time']}\nStatus: {request['status'].title()}")
+                    answer = request["admin_response"] or "No admin reply yet."
+                    result.config(text=f"Provider: {request['provider']}\nPreferred time: {request['preferred_time']}\nStatus: {request['status'].title()}\nAdmin reply: {answer}")
+                    cancel_button.set_enabled(request["status"] == "pending")
                 else:
                     result.config(text="No request matched that code and phone number.")
+                    cancel_button.set_enabled(False)
             except Exception as error:
                 messagebox.showerror("Could not check request", str(error), parent=window)
 
+        def cancel_request():
+            tracking_code = code.get().strip().upper()
+            requester_phone = phone.get().strip()
+            if not tracking_code or not requester_phone:
+                messagebox.showinfo("Enter request details", "Enter the tracking code and phone number, then check the status first.", parent=window)
+                return
+            if not messagebox.askyesno("Cancel request", "Cancel this pending service request? This cannot be undone.", parent=window):
+                return
+            try:
+                with connect() as db:
+                    cursor = db.cursor()
+                    cursor.execute(
+                        "UPDATE service_requests SET status = 'cancelled' WHERE tracking_code = %s AND phone = %s AND status = 'pending'",
+                        (tracking_code, requester_phone),
+                    )
+                    changed = cursor.rowcount
+                    db.commit()
+                    cursor.close()
+                if changed:
+                    messagebox.showinfo("Request cancelled", "Your request has been cancelled.", parent=window)
+                else:
+                    messagebox.showinfo("Could not cancel", "This request may no longer be pending. Check its latest status.", parent=window)
+                lookup()
+            except Exception as error:
+                messagebox.showerror("Could not cancel request", str(error), parent=window)
+
         RoundButton(frame, "Check status", lookup, primary=True).grid(row=3, column=1, sticky="e", pady=(6, 0))
+        cancel_button = RoundButton(frame, "Cancel pending request", cancel_request)
+        cancel_button.grid(row=5, column=1, sticky="e", pady=(8, 0))
+        cancel_button.set_enabled(False)
 
     def open_directions(self):
         selected = self.results.selection()
@@ -883,6 +925,9 @@ class ServiceFinderApp(tk.Tk):
         reports.pack(fill="both", expand=True)
         detail = tk.Text(frame, height=4, wrap="word", state="disabled")
         detail.pack(fill="x", pady=(8, 6))
+        ttk.Label(frame, text="Reply shown to customer").pack(anchor="w")
+        admin_reply = tk.Text(frame, height=3, wrap="word")
+        admin_reply.pack(fill="x", pady=(3, 6))
 
         def refresh_reports():
             reports.delete(*reports.get_children())
@@ -1017,7 +1062,7 @@ class ServiceFinderApp(tk.Tk):
         tree.pack(fill="both", expand=True)
         detail = tk.Text(frame, height=4, wrap="word", state="disabled")
         detail.pack(fill="x", pady=(8, 6))
-        status = ttk.Combobox(frame, values=("pending", "accepted", "declined", "completed"), state="readonly", width=15)
+        status = ttk.Combobox(frame, values=("pending", "accepted", "declined", "completed", "cancelled"), state="readonly", width=15)
         status.set("pending")
         status.pack(side="left")
         descriptions = {}
@@ -1029,7 +1074,7 @@ class ServiceFinderApp(tk.Tk):
                 with connect() as db:
                     cursor = db.cursor(dictionary=True)
                     cursor.execute(
-                        """SELECT r.id, r.tracking_code, p.name AS provider, r.requester_name, r.phone, r.preferred_time, r.status, r.description
+                        """SELECT r.id, r.tracking_code, p.name AS provider, r.requester_name, r.phone, r.preferred_time, r.status, r.description, r.admin_response
                            FROM service_requests r JOIN providers p ON p.id = r.provider_id
                            ORDER BY (r.status = 'pending') DESC, r.created_at DESC"""
                     )
@@ -1038,7 +1083,7 @@ class ServiceFinderApp(tk.Tk):
                 for row in rows:
                     key = str(row["id"])
                     tree.insert("", "end", iid=key, values=(row["tracking_code"], row["provider"], row["requester_name"], row["phone"], row["preferred_time"], row["status"]))
-                    descriptions[key] = row["description"]
+                    descriptions[key] = {"description": row["description"], "admin_response": row["admin_response"] or ""}
             except Exception as error:
                 messagebox.showerror("Could not load requests", str(error), parent=window)
 
@@ -1048,9 +1093,11 @@ class ServiceFinderApp(tk.Tk):
                 return
             detail.configure(state="normal")
             detail.delete("1.0", "end")
-            detail.insert("1.0", descriptions.get(selected[0], ""))
+            detail.insert("1.0", descriptions.get(selected[0], {}).get("description", ""))
             detail.configure(state="disabled")
             status.set(tree.item(selected[0], "values")[5])
+            admin_reply.delete("1.0", "end")
+            admin_reply.insert("1.0", descriptions.get(selected[0], {}).get("admin_response", ""))
 
         def save_status():
             selected = tree.selection()
@@ -1060,7 +1107,7 @@ class ServiceFinderApp(tk.Tk):
             try:
                 with connect() as db:
                     cursor = db.cursor()
-                cursor.execute("UPDATE service_requests SET status = %s WHERE id = %s", (status.get(), int(selected[0])))
+                    cursor.execute("UPDATE service_requests SET status = %s, admin_response = %s WHERE id = %s", (status.get(), admin_reply.get("1.0", "end").strip(), int(selected[0])))
                     db.commit()
                     cursor.close()
                 refresh()
@@ -1100,7 +1147,7 @@ class ServiceFinderApp(tk.Tk):
                 reviews = cursor.fetchall()
                 cursor.execute("SELECT id, provider_id, reporter, issue, details, status, created_at FROM provider_reports ORDER BY id")
                 reports = cursor.fetchall()
-                cursor.execute("SELECT id, tracking_code, provider_id, requester_name, phone, preferred_time, description, status, created_at FROM service_requests ORDER BY id")
+                cursor.execute("SELECT id, tracking_code, provider_id, requester_name, phone, preferred_time, description, admin_response, status, created_at FROM service_requests ORDER BY id")
                 requests = cursor.fetchall()
                 cursor.close()
             payload = {
@@ -1120,7 +1167,7 @@ class ServiceFinderApp(tk.Tk):
                 "providers": ["id", "name", "service", "location", "phone", "price", "notes", "latitude", "longitude", "opening_hours", "verified", "website"],
                 "reviews": ["id", "provider_id", "reviewer", "rating", "comment", "created_at"],
                 "reports": ["id", "provider_id", "reporter", "issue", "details", "status", "created_at"],
-                "requests": ["id", "tracking_code", "provider_id", "requester_name", "phone", "preferred_time", "description", "status", "created_at"],
+                "requests": ["id", "tracking_code", "provider_id", "requester_name", "phone", "preferred_time", "description", "admin_response", "status", "created_at"],
             }
             for name, rows in (("providers", providers), ("reviews", reviews), ("reports", reports), ("requests", requests)):
                 path = output_dir / f"local_services_{name}_{timestamp}.csv"
@@ -1188,8 +1235,8 @@ class ServiceFinderApp(tk.Tk):
                     [(r["id"], r["provider_id"], r["reporter"], r["issue"], r["details"], r["status"], r["created_at"]) for r in reports],
                 )
                 cursor.executemany(
-                    "INSERT INTO service_requests (id, tracking_code, provider_id, requester_name, phone, preferred_time, description, status, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    [(r["id"], r.get("tracking_code"), r["provider_id"], r["requester_name"], r["phone"], r["preferred_time"], r["description"], r["status"], r["created_at"]) for r in requests],
+                    "INSERT INTO service_requests (id, tracking_code, provider_id, requester_name, phone, preferred_time, description, admin_response, status, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    [(r["id"], r.get("tracking_code"), r["provider_id"], r["requester_name"], r["phone"], r["preferred_time"], r["description"], r.get("admin_response"), r["status"], r["created_at"]) for r in requests],
                 )
                 db.commit()
                 cursor.close()
