@@ -211,11 +211,13 @@ class ServiceFinderApp(tk.Tk):
         self.current_coordinates = None
         self.favorites_only = False
         self.verified_only = False
+        self.last_notified_request_id = None
         self.favorites_path = Path(os.getenv("APPDATA", str(Path.home()))) / "LocalServicesFinder" / "favorites.json"
         self.favorite_ids = self.load_favorites()
         self._build_ui()
         self.search()
         self.after(250, self.ensure_admin_setup)
+        self.after(45000, self.check_request_notifications)
 
     def _build_ui(self):
         header = ttk.Frame(self.page)
@@ -474,7 +476,7 @@ class ServiceFinderApp(tk.Tk):
         except Exception as error:
             messagebox.showerror("Could not load providers", f"Check that MySQL is running and your settings are correct.\n\n{error}")
 
-    def refresh_stats(self):
+    def refresh_stats(self, notify_new=True):
         try:
             with connect() as db:
                 cursor = db.cursor()
@@ -486,11 +488,25 @@ class ServiceFinderApp(tk.Tk):
                               (SELECT COUNT(*) FROM service_requests WHERE status = 'pending')"""
                 )
                 counts = cursor.fetchone()
+                cursor.execute("SELECT COALESCE(MAX(id), 0) FROM service_requests WHERE status = 'pending'")
+                newest_pending_id = cursor.fetchone()[0]
                 cursor.close()
             for key, value in zip(("providers", "verified", "reviews", "reports", "requests"), counts):
                 self.stat_values[key].config(text=str(value))
+            if self.last_notified_request_id is None:
+                self.last_notified_request_id = newest_pending_id
+            elif notify_new and newest_pending_id > self.last_notified_request_id:
+                self.last_notified_request_id = newest_pending_id
+                self.bell()
+                messagebox.showinfo("New service request", "A new service request has arrived. Open Manage requests to review it.", parent=self)
+            else:
+                self.last_notified_request_id = max(self.last_notified_request_id, newest_pending_id)
         except Exception:
             pass
+
+    def check_request_notifications(self):
+        self.refresh_stats(notify_new=True)
+        self.after(45000, self.check_request_notifications)
 
     @staticmethod
     def distance_km(lat1, lon1, lat2, lon2):
@@ -731,6 +747,27 @@ class ServiceFinderApp(tk.Tk):
         ttk.Label(frame, text="What do you need?").grid(row=4, column=0, sticky="nw", pady=3)
         description = tk.Text(frame, width=38, height=5, wrap="word")
         description.grid(row=4, column=1, pady=3)
+        privacy_agreed = tk.BooleanVar(value=False)
+
+        def show_privacy_notice():
+            notice = tk.Toplevel(window)
+            notice.title("Privacy notice")
+            notice.transient(window)
+            notice.grab_set()
+            notice_frame = ttk.Frame(notice, padding=16)
+            notice_frame.pack(fill="both", expand=True)
+            ttk.Label(notice_frame, text="How this app uses your information", font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(0, 8))
+            notice_text = (
+                "When you send this request, your name, phone number, preferred time, and request details are saved in the app's MySQL database. "
+                "The app administrator can view them to respond to and manage your request. Use your tracking code and phone number to check its status. "
+                "The information may also be included in database backups. Do not enter passwords, payment details, or other sensitive information. "
+                "To ask the person operating this app to correct or delete your information, contact them directly."
+            )
+            ttk.Label(notice_frame, text=notice_text, wraplength=470, justify="left").pack(anchor="w", pady=(0, 12))
+            RoundButton(notice_frame, "Close", notice.destroy, primary=True).pack(anchor="e")
+
+        ttk.Checkbutton(frame, text="I have read and agree to the privacy notice", variable=privacy_agreed).grid(row=5, column=0, sticky="w", pady=(8, 0))
+        RoundButton(frame, "Read privacy notice", show_privacy_notice).grid(row=5, column=1, sticky="e", pady=(8, 0))
 
         def submit():
             requester_name, requester_phone = name.get().strip(), phone.get().strip()
@@ -741,23 +778,26 @@ class ServiceFinderApp(tk.Tk):
             if not 7 <= sum(char.isdigit() for char in requester_phone) <= 15:
                 messagebox.showwarning("Check phone number", "Enter a phone number with 7 to 15 digits.", parent=window)
                 return
+            if not privacy_agreed.get():
+                messagebox.showwarning("Privacy notice", "Read and agree to the privacy notice before sending your request.", parent=window)
+                return
             try:
                 tracking_code = f"LSF-{secrets.token_hex(4).upper()}"
                 with connect() as db:
                     cursor = db.cursor()
                     cursor.execute(
-                        "INSERT INTO service_requests (tracking_code, provider_id, requester_name, phone, preferred_time, description) VALUES (%s, %s, %s, %s, %s, %s)",
+                        "INSERT INTO service_requests (tracking_code, provider_id, requester_name, phone, preferred_time, description, privacy_consent_at) VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)",
                         (tracking_code, provider_id, requester_name, requester_phone, when, details),
                     )
                     db.commit()
                     cursor.close()
                 window.destroy()
-                self.refresh_stats()
+                self.refresh_stats(notify_new=False)
                 messagebox.showinfo("Request sent", f"Your request to {provider_name} has been saved. Keep this tracking code to check its status later:\n\n{tracking_code}", parent=self)
             except Exception as error:
                 messagebox.showerror("Could not send request", str(error), parent=window)
 
-        RoundButton(frame, "Send request", submit, primary=True).grid(row=5, column=1, sticky="e", pady=(8, 0))
+        RoundButton(frame, "Send request", submit, primary=True).grid(row=6, column=1, sticky="e", pady=(8, 0))
 
     def track_request(self):
         window = tk.Toplevel(self)
@@ -1147,7 +1187,7 @@ class ServiceFinderApp(tk.Tk):
                 reviews = cursor.fetchall()
                 cursor.execute("SELECT id, provider_id, reporter, issue, details, status, created_at FROM provider_reports ORDER BY id")
                 reports = cursor.fetchall()
-                cursor.execute("SELECT id, tracking_code, provider_id, requester_name, phone, preferred_time, description, admin_response, status, created_at FROM service_requests ORDER BY id")
+                cursor.execute("SELECT id, tracking_code, provider_id, requester_name, phone, preferred_time, description, admin_response, privacy_consent_at, status, created_at FROM service_requests ORDER BY id")
                 requests = cursor.fetchall()
                 cursor.close()
             payload = {
@@ -1167,7 +1207,7 @@ class ServiceFinderApp(tk.Tk):
                 "providers": ["id", "name", "service", "location", "phone", "price", "notes", "latitude", "longitude", "opening_hours", "verified", "website"],
                 "reviews": ["id", "provider_id", "reviewer", "rating", "comment", "created_at"],
                 "reports": ["id", "provider_id", "reporter", "issue", "details", "status", "created_at"],
-                "requests": ["id", "tracking_code", "provider_id", "requester_name", "phone", "preferred_time", "description", "admin_response", "status", "created_at"],
+                "requests": ["id", "tracking_code", "provider_id", "requester_name", "phone", "preferred_time", "description", "admin_response", "privacy_consent_at", "status", "created_at"],
             }
             for name, rows in (("providers", providers), ("reviews", reviews), ("reports", reports), ("requests", requests)):
                 path = output_dir / f"local_services_{name}_{timestamp}.csv"
@@ -1235,8 +1275,8 @@ class ServiceFinderApp(tk.Tk):
                     [(r["id"], r["provider_id"], r["reporter"], r["issue"], r["details"], r["status"], r["created_at"]) for r in reports],
                 )
                 cursor.executemany(
-                    "INSERT INTO service_requests (id, tracking_code, provider_id, requester_name, phone, preferred_time, description, admin_response, status, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    [(r["id"], r.get("tracking_code"), r["provider_id"], r["requester_name"], r["phone"], r["preferred_time"], r["description"], r.get("admin_response"), r["status"], r["created_at"]) for r in requests],
+                    "INSERT INTO service_requests (id, tracking_code, provider_id, requester_name, phone, preferred_time, description, admin_response, privacy_consent_at, status, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    [(r["id"], r.get("tracking_code"), r["provider_id"], r["requester_name"], r["phone"], r["preferred_time"], r["description"], r.get("admin_response"), r.get("privacy_consent_at"), r["status"], r["created_at"]) for r in requests],
                 )
                 db.commit()
                 cursor.close()

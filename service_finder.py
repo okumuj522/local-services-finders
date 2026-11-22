@@ -87,6 +87,7 @@ def connect():
                preferred_time VARCHAR(100) NOT NULL,
                description TEXT NOT NULL,
                admin_response TEXT NULL,
+               privacy_consent_at TIMESTAMP NULL,
                status VARCHAR(20) NOT NULL DEFAULT 'pending',
                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                CONSTRAINT fk_requests_provider FOREIGN KEY (provider_id)
@@ -99,6 +100,8 @@ def connect():
         cursor.execute("ALTER TABLE service_requests ADD COLUMN tracking_code VARCHAR(32) NULL UNIQUE")
     if "admin_response" not in request_columns:
         cursor.execute("ALTER TABLE service_requests ADD COLUMN admin_response TEXT NULL")
+    if "privacy_consent_at" not in request_columns:
+        cursor.execute("ALTER TABLE service_requests ADD COLUMN privacy_consent_at TIMESTAMP NULL")
     cursor.execute("UPDATE service_requests SET tracking_code = CONCAT('LSF-', LPAD(id, 8, '0')) WHERE tracking_code IS NULL")
     cursor.close()
     return db
