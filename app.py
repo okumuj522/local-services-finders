@@ -1247,10 +1247,37 @@ class ServiceFinderApp(tk.Tk):
             if not opened:
                 messagebox.showerror("Could not open WhatsApp", "The request update was saved, but WhatsApp could not be opened. Try again from this request.", parent=window)
 
+        def delete_request():
+            selected = tree.selection()
+            if not selected:
+                messagebox.showinfo("Select a request", "Choose a request first.", parent=window)
+                return
+            tracking_code = tree.item(selected[0], "values")[0]
+            if not messagebox.askyesno(
+                "Delete service request",
+                f"Permanently delete request {tracking_code} and its customer details from this database? This cannot be undone. Existing backups may still contain a copy.",
+                icon="warning",
+                parent=window,
+            ):
+                return
+            try:
+                with connect() as db:
+                    cursor = db.cursor()
+                    cursor.execute("DELETE FROM service_requests WHERE id = %s", (int(selected[0]),))
+                    db.commit()
+                    cursor.close()
+                refresh()
+                self.refresh_stats()
+            except Exception as error:
+                messagebox.showerror("Could not delete request", str(error), parent=window)
+
         tree.bind("<<TreeviewSelect>>", select_request)
-        RoundButton(frame, "Message provider on WhatsApp", message_provider).pack(anchor="e", pady=(0, 6))
-        RoundButton(frame, "Save and message customer on WhatsApp", message_customer).pack(anchor="e", pady=(0, 6))
-        RoundButton(frame, "Save status", save_status, primary=True).pack(anchor="e")
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x", pady=(8, 0))
+        RoundButton(actions, "Delete selected request", delete_request).pack(side="left")
+        RoundButton(actions, "Message provider on WhatsApp", message_provider).pack(side="right", padx=(6, 0))
+        RoundButton(actions, "Save and message customer on WhatsApp", message_customer).pack(side="right", padx=(6, 0))
+        RoundButton(actions, "Save status", save_status, primary=True).pack(side="right")
         refresh()
 
     def backup_restore_menu(self):
