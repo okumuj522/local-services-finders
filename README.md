@@ -10,13 +10,13 @@ Features include provider search, map-selected coordinates and nearby sorting, r
 - A running MySQL server
 - A MySQL database named `local_services` (or set `MYSQL_DATABASE`)
 
-Create the database once in MySQL:
+Create the database and a limited app account once. Run this from PowerShell and enter your MySQL administrator password when prompted. It is not saved by the setup script:
 
-```sql
-CREATE DATABASE local_services;
+```powershell
+python setup_mysql_user.py
 ```
 
-The app creates its tables the first time it connects.
+The setup creates the `local_services` database and a `local_services_app` account with access only to that database. The app creates its tables the first time it connects.
 
 ## Run from Python
 
@@ -26,11 +26,12 @@ Install the database connector:
 python -m pip install -r requirements.txt
 ```
 
-Set the MySQL login for this PowerShell session, then start the app:
+Set the app account password you chose during setup for this PowerShell session, then start the app:
 
 ```powershell
-$env:MYSQL_USER = "root"
-$env:MYSQL_PASSWORD = "your-MySQL-password"
+$env:MYSQL_USER = "local_services_app"
+$env:MYSQL_PASSWORD = "your-app-database-password"
+$env:MYSQL_DATABASE = "local_services"
 python app.py
 ```
 
