@@ -759,7 +759,7 @@ class ServiceFinderApp(tk.Tk):
             ttk.Label(notice_frame, text="How this app uses your information", font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(0, 8))
             notice_text = (
                 "When you send this request, your name, phone number, preferred time, and request details are saved in the app's MySQL database. "
-                "The app administrator can view them and may share relevant details with the provider you selected so they can respond. "
+                "The app administrator can view them, contact you about the request, and share relevant details with the provider you selected so they can respond. "
                 "Use your tracking code and phone number to check its status. "
                 "The information may also be included in database backups. Do not enter passwords, payment details, or other sensitive information. "
                 "To ask the person operating this app to correct or delete your information, contact them directly."
@@ -1199,8 +1199,57 @@ class ServiceFinderApp(tk.Tk):
             if not opened:
                 messagebox.showerror("Could not open WhatsApp", "Open WhatsApp or a browser on this computer and try again.", parent=window)
 
+        def message_customer():
+            selected = tree.selection()
+            if not selected:
+                messagebox.showinfo("Select a request", "Choose a request first.", parent=window)
+                return
+            request = descriptions.get(selected[0])
+            if not request:
+                return
+            digits = re.sub(r"\D", "", request["requester_phone"] or "")
+            if digits.startswith("00"):
+                digits = digits[2:]
+            elif digits.startswith("0"):
+                digits = "254" + digits[1:]
+            elif len(digits) == 9 and digits.startswith(("7", "1")):
+                digits = "254" + digits
+            if not 10 <= len(digits) <= 15:
+                messagebox.showwarning("Check customer phone", "The customer phone number needs a country code.", parent=window)
+                return
+            reply = admin_reply.get("1.0", "end").strip()
+            try:
+                with connect() as db:
+                    cursor = db.cursor()
+                    cursor.execute(
+                        "UPDATE service_requests SET status = %s, admin_response = %s WHERE id = %s",
+                        (status.get(), reply, int(selected[0])),
+                    )
+                    db.commit()
+                    cursor.close()
+                request["admin_response"] = reply
+                values = list(tree.item(selected[0], "values"))
+                values[5] = status.get()
+                tree.item(selected[0], values=values)
+                self.refresh_stats()
+            except Exception as error:
+                messagebox.showerror("Could not save request update", str(error), parent=window)
+                return
+            message = (
+                f"Hello {request['requester_name']}, here is an update for your request {request['tracking_code']}.\n"
+                f"Status: {status.get().title()}\n"
+                f"Reply: {reply or 'The status of your request has been updated.'}"
+            )
+            try:
+                opened = webbrowser.open(f"https://wa.me/{digits}?{urlencode({'text': message})}")
+            except Exception:
+                opened = False
+            if not opened:
+                messagebox.showerror("Could not open WhatsApp", "The request update was saved, but WhatsApp could not be opened. Try again from this request.", parent=window)
+
         tree.bind("<<TreeviewSelect>>", select_request)
         RoundButton(frame, "Message provider on WhatsApp", message_provider).pack(anchor="e", pady=(0, 6))
+        RoundButton(frame, "Save and message customer on WhatsApp", message_customer).pack(anchor="e", pady=(0, 6))
         RoundButton(frame, "Save status", save_status, primary=True).pack(anchor="e")
         refresh()
 
